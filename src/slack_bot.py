@@ -55,6 +55,7 @@ try:
         ResultMessage,
         PermissionResultAllow,
         PermissionUpdate,
+        SystemMessage,
     )
 except ImportError:
     print("❌ claude-agent-sdk not installed")
@@ -285,8 +286,18 @@ async def process_query(query_text: str, thread_ts: str, say):
 
     try:
         print(f"[DEBUG] Starting query...", flush=True)
+        print(f"[DEBUG] MCP server config: sqlite -> {python_path} {MCP_SERVER_PATH}", flush=True)
         async for message in query(prompt=prompt_generator(query_text), options=options):
             print(f"[DEBUG] Received message type: {type(message).__name__}", flush=True)
+
+            # Log MCP server status on init
+            if isinstance(message, SystemMessage) and message.subtype == 'init':
+                mcp_status = message.data.get('mcp_servers', [])
+                print(f"[DEBUG] MCP servers status: {mcp_status}", flush=True)
+                tools = message.data.get('tools', [])
+                sqlite_tools = [t for t in tools if 'sqlite' in t]
+                print(f"[DEBUG] SQLite tools available: {sqlite_tools}", flush=True)
+
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():

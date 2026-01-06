@@ -214,21 +214,39 @@ def handle_request(request):
 
 def main():
     """Main loop - read JSON-RPC requests from stdin, write responses to stdout."""
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            request = json.loads(line)
-            response = handle_request(request)
-            if response:  # Some methods (notifications) don't need a response
-                send_response(response)
-        except json.JSONDecodeError as e:
-            send_response({
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32700, "message": f"Parse error: {e}"},
-            })
+    sys.stderr.write(f"[MCP] SQLite server starting, DB: {DB_PATH}\n")
+    sys.stderr.flush()
+
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+                response = handle_request(request)
+                if response:  # Some methods (notifications) don't need a response
+                    send_response(response)
+            except json.JSONDecodeError as e:
+                send_response({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": f"Parse error: {e}"},
+                })
+            except Exception as e:
+                sys.stderr.write(f"[MCP] Error handling request: {e}\n")
+                sys.stderr.flush()
+                send_response({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32000, "message": f"Internal error: {e}"},
+                })
+    except Exception as e:
+        sys.stderr.write(f"[MCP] Fatal error: {e}\n")
+        sys.stderr.flush()
+    finally:
+        sys.stderr.write("[MCP] Server shutting down\n")
+        sys.stderr.flush()
 
 
 if __name__ == "__main__":
