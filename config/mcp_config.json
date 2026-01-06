@@ -5,7 +5,7 @@
       "args": [
         "mcp-server-sqlite",
         "--db-path",
-        "./data/logistics.db"
+        "/Users/linamfr/Documents/projects/retail-ops/data/logistics.db"
       ]
     },
     "slack": {
