@@ -1,35 +1,22 @@
 {
   "mcpServers": {
     "sqlite": {
-      "command": "npx",
+      "command": "uvx",
       "args": [
-        "-y",
-        "mcp-server-sqlite-npx",
-        "./data/cash_logistics.db"
-      ],
-      "description": "SQLite database access for cash logistics data"
+        "mcp-server-sqlite",
+        "--db-path",
+        "./data/logistics.db"
+      ]
     },
     "slack": {
       "command": "npx",
       "args": [
         "-y",
-        "@mkusaka/mcp-server-slack-notify"
+        "@modelcontextprotocol/server-slack"
       ],
       "env": {
-        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}",
-        "SLACK_DEFAULT_CHANNEL": "${SLACK_DEFAULT_CHANNEL:-#cash-logistics-alerts}"
-      },
-      "description": "Slack notifications for alerts and reports"
-    },
-    "filesystem": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "./data",
-        "./reports"
-      ],
-      "description": "File system access for reading data and writing reports"
+        "SLACK_BOT_TOKEN": "${SLACK_BOT_TOKEN}"
+      }
     }
   }
 }

@@ -1,13 +1,11 @@
-# Cash Logistics Agent Dependencies
-
 # Claude Agent SDK
-claude-agent-sdk>=0.1.0
+claude-agent-sdk>=0.1.4
 
-# Environment variable management
+# Database
+sqlalchemy>=2.0.0
+
+# Slack Bot
+slack-bolt>=1.18.0
+
+# Utilities
 python-dotenv>=1.0.0
-
-# Rich console output for demo
-rich>=13.0.0
-
-# Type hints (Python 3.9+)
-typing-extensions>=4.0.0
