@@ -9,15 +9,31 @@ This avoids issues with uvx/npx spawning and provides reliable database connecti
 import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 # Database path
 DB_PATH = Path(__file__).parent.parent / "data" / "logistics.db"
 
+# Validate database exists on startup
+if not DB_PATH.exists():
+    sys.stderr.write(f"ERROR: Database not found at {DB_PATH}\n")
+    sys.stderr.flush()
 
-def get_connection():
-    """Get a database connection."""
-    return sqlite3.connect(str(DB_PATH))
+
+def get_connection(retries=3, delay=0.5):
+    """Get a database connection with retry logic."""
+    last_error = None
+    for attempt in range(retries):
+        try:
+            conn = sqlite3.connect(str(DB_PATH), timeout=10)
+            conn.execute("SELECT 1")  # Test connection
+            return conn
+        except sqlite3.Error as e:
+            last_error = e
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))  # Exponential backoff
+    raise sqlite3.Error(f"Failed to connect after {retries} attempts: {last_error}")
 
 
 def list_tables():

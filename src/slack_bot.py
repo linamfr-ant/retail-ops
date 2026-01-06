@@ -275,7 +275,7 @@ async def process_query(query_text: str, thread_ts: str, say):
         ],
         can_use_tool=auto_approve_tool,
         cwd=str(PROJECT_ROOT),
-        max_turns=15,  # Prevent infinite loops
+        max_turns=30,  # Allow enough turns for complex queries + response
     )
 
     # Track tool usage for status updates
