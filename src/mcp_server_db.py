@@ -10,6 +10,9 @@ import json
 import sqlite3
 import sys
 import time
+import os
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 # Database path
@@ -87,14 +90,79 @@ def write_query(query: str):
         raise e
 
 
+def read_thread(channel: str, thread_ts: str, limit: int = 10):
+    """
+    Read messages from a Slack thread to get conversation context.
+    """
+    # Log to file since stderr may not be visible
+    with open("/tmp/mcp_debug.log", "a") as f:
+        f.write(f"read_thread called: channel={channel}, thread_ts={thread_ts}\n")
+
+    slack_token = os.environ.get("SLACK_BOT_TOKEN")
+    if not slack_token:
+        with open("/tmp/mcp_debug.log", "a") as f:
+            f.write("ERROR: SLACK_BOT_TOKEN not configured\n")
+        return {"success": False, "error": "SLACK_BOT_TOKEN not configured"}
+
+    try:
+        url = f"https://slack.com/api/conversations.replies?channel={channel}&ts={thread_ts}&limit={limit}"
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {slack_token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            with open("/tmp/mcp_debug.log", "a") as f:
+                f.write(f"Slack API response ok={result.get('ok')}, error={result.get('error')}\n")
+            if result.get("ok"):
+                messages = []
+                for msg in result.get("messages", []):
+                    # Skip bot status messages like "Analyzing...", "Using tool..."
+                    text = msg.get("text", "")
+                    if text.startswith(("🔍", "🔧", "🧠", "🔄", "✅ Complete")):
+                        continue
+                    role = "assistant" if msg.get("bot_id") else "user"
+                    messages.append({"role": role, "text": text})
+                with open("/tmp/mcp_debug.log", "a") as f:
+                    f.write(f"Returning {len(messages)} messages\n")
+                return {"success": True, "messages": messages}
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+    except urllib.error.URLError as e:
+        with open("/tmp/mcp_debug.log", "a") as f:
+            f.write(f"URLError: {e}\n")
+        return {"success": False, "error": str(e)}
+
+
+def send_slack_message(channel: str, message: str):
+    """
+    Send a message to a Slack channel. Only use after user approves.
+    """
+    slack_token = os.environ.get("SLACK_BOT_TOKEN")
+    if not slack_token:
+        return {"success": False, "error": "SLACK_BOT_TOKEN not configured"}
+
+    try:
+        data = json.dumps({"channel": channel, "text": message}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://slack.com/api/chat.postMessage",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {slack_token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            if result.get("ok"):
+                return {"success": True, "channel": channel}
+            else:
+                return {"success": False, "error": result.get("error", "Unknown error")}
+    except urllib.error.URLError as e:
+        return {"success": False, "error": str(e)}
+
+
 # MCP Protocol Implementation
-def send_response(response):
-    """Send a JSON-RPC response."""
-    output = json.dumps(response) + "\n"
-    sys.stdout.write(output)
-    sys.stdout.flush()
-
-
 def handle_request(request):
     """Handle a JSON-RPC request."""
     method = request.get("method")
@@ -158,6 +226,47 @@ def handle_request(request):
                                 "required": ["query"],
                             },
                         },
+                        {
+                            "name": "read_thread",
+                            "description": "Read messages from the current Slack thread to get conversation context. Use this when responding to short replies like 'yes', 'approved', 'no' to understand what was previously discussed.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "description": "Channel ID (provided in context)"
+                                    },
+                                    "thread_ts": {
+                                        "type": "string",
+                                        "description": "Thread timestamp (provided in context)"
+                                    },
+                                    "limit": {
+                                        "type": "integer",
+                                        "description": "Max messages to fetch (default 10)",
+                                        "default": 10
+                                    }
+                                },
+                                "required": ["channel", "thread_ts"],
+                            },
+                        },
+                        {
+                            "name": "send_slack_message",
+                            "description": "Send a message to a Slack channel. IMPORTANT: Only use this AFTER the user explicitly approves in the thread.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "description": "Channel name (e.g., '#ops-alerts') or channel ID"
+                                    },
+                                    "message": {
+                                        "type": "string",
+                                        "description": "Message content to send"
+                                    }
+                                },
+                                "required": ["channel", "message"],
+                            },
+                        },
                     ]
                 },
             }
@@ -186,6 +295,30 @@ def handle_request(request):
             elif tool_name == "write_query":
                 result = write_query(tool_args["query"])
                 content = f"Query executed. Affected rows: {result['affected_rows']}"
+            elif tool_name == "read_thread":
+                sys.stderr.write(f"[MCP] read_thread called with channel={tool_args.get('channel')}, thread_ts={tool_args.get('thread_ts')}\n")
+                sys.stderr.flush()
+                result = read_thread(
+                    tool_args["channel"],
+                    tool_args["thread_ts"],
+                    tool_args.get("limit", 10)
+                )
+                sys.stderr.write(f"[MCP] read_thread result: {result}\n")
+                sys.stderr.flush()
+                if result.get("success"):
+                    messages = result["messages"]
+                    content = "Thread conversation:\n"
+                    for msg in messages:
+                        role = msg["role"].upper()
+                        content += f"[{role}]: {msg['text']}\n"
+                else:
+                    content = f"Failed to read thread: {result.get('error')}"
+            elif tool_name == "send_slack_message":
+                result = send_slack_message(tool_args["channel"], tool_args["message"])
+                if result.get("success"):
+                    content = f"Message sent to {result['channel']}"
+                else:
+                    content = f"Failed to send message: {result.get('error')}"
             else:
                 return {
                     "jsonrpc": "2.0",
@@ -214,11 +347,24 @@ def handle_request(request):
 
 def main():
     """Main loop - read JSON-RPC requests from stdin, write responses to stdout."""
+    # Use unbuffered I/O for reliable subprocess communication
+    import io
+    stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', newline='\n')
+    stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', newline='\n', write_through=True)
+
+    # Replace the global send_response to use unbuffered stdout
+    def send(response):
+        stdout.write(json.dumps(response) + "\n")
+        stdout.flush()
+
     sys.stderr.write(f"[MCP] SQLite server starting, DB: {DB_PATH}\n")
     sys.stderr.flush()
 
     try:
-        for line in sys.stdin:
+        while True:
+            line = stdin.readline()
+            if not line:  # EOF
+                break
             line = line.strip()
             if not line:
                 continue
@@ -226,9 +372,9 @@ def main():
                 request = json.loads(line)
                 response = handle_request(request)
                 if response:  # Some methods (notifications) don't need a response
-                    send_response(response)
+                    send(response)
             except json.JSONDecodeError as e:
-                send_response({
+                send({
                     "jsonrpc": "2.0",
                     "id": None,
                     "error": {"code": -32700, "message": f"Parse error: {e}"},
@@ -236,7 +382,7 @@ def main():
             except Exception as e:
                 sys.stderr.write(f"[MCP] Error handling request: {e}\n")
                 sys.stderr.flush()
-                send_response({
+                send({
                     "jsonrpc": "2.0",
                     "id": None,
                     "error": {"code": -32000, "message": f"Internal error: {e}"},

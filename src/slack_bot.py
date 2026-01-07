@@ -21,6 +21,9 @@ import sys
 import re
 from pathlib import Path
 
+# Track threads with active conversations for context continuity
+active_threads = set()
+
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
 MCP_SERVER_PATH = Path(__file__).parent / "mcp_server_db.py"
@@ -51,7 +54,6 @@ try:
         AssistantMessage,
         TextBlock,
         ToolUseBlock,
-        ToolResultBlock,
         ResultMessage,
         PermissionResultAllow,
         PermissionUpdate,
@@ -211,6 +213,43 @@ You MUST use Slack's mrkdwn format, NOT standard Markdown:
 - Deposit peaks on days without scheduled pickups
 - Stores in same region/city with different pickup days (consolidation opportunity)
 - High overtime costs indicating schedule issues
+
+## Proactive Next Actions
+
+After completing analysis, always suggest the logical next action. Don't wait for the user to ask.
+
+*Examples of proactive suggestions:*
+
+- After finding missed pickups → "I can draft an SLA claim email to [carrier]. Want me to?"
+- After identifying high-risk cash → "I can draft an alert for #ops-alerts. Want me to?"
+- After cost analysis showing issues → "I can draft a summary report for finance. Want me to?"
+
+*How to suggest actions:*
+1. Complete your analysis
+2. Identify what action would naturally follow
+3. Offer to draft it: "I'll draft [the thing] — reply *approve* when ready, or tell me what to change."
+4. If approved, show the draft
+5. Wait for final approval before any sending
+
+*Common next actions by finding type:*
+- Missed pickups → SLA claim email to carrier
+- High-risk cash accumulation → Alert to ops channel
+- Cost optimization opportunity → Summary for finance team
+- Schedule issues → Recommendation memo
+
+Be conversational. The goal is to save the user time by anticipating what they'll need next.
+
+## Thread Context
+
+When you receive a short reply like "yes", "approved", "no", "do it", etc., you need context from the conversation.
+
+Use `read_thread` tool with the channel and thread_ts (provided in the query) to fetch previous messages. This tells you what was discussed and what action was proposed.
+
+Example flow:
+1. User says: "yes" (in reply to your proposal)
+2. You call: read_thread(channel, thread_ts)
+3. You see: previous conversation where you offered to draft an email
+4. You proceed: draft the email or execute the approved action
 """
 
 
@@ -255,6 +294,10 @@ async def process_query(query_text: str, thread_ts: str, say):
             "sqlite": {
                 "command": python_path,
                 "args": [str(MCP_SERVER_PATH)],
+                "env": {
+                    "PYTHONUNBUFFERED": "1",
+                    "SLACK_BOT_TOKEN": os.environ.get("SLACK_BOT_TOKEN", ""),
+                },
             },
         },
         allowed_tools=[
@@ -262,6 +305,8 @@ async def process_query(query_text: str, thread_ts: str, say):
             "mcp__sqlite__describe_table",
             "mcp__sqlite__read_query",
             "mcp__sqlite__write_query",
+            "mcp__sqlite__read_thread",
+            "mcp__sqlite__send_slack_message",
         ],
         can_use_tool=auto_approve_tool,
         cwd=str(PROJECT_ROOT),
@@ -319,6 +364,7 @@ async def process_query(query_text: str, thread_ts: str, say):
                             last_tool_posted = tool_name
                         was_using_tools = True
 
+
             elif isinstance(message, PermissionUpdate):
                 print(f"[DEBUG] Permission update: {message}", flush=True)
                 # Log any permission-related messages
@@ -345,12 +391,14 @@ async def handle_mention(event, say, client):
     """Handle @mentions in Slack channels."""
     print(f"[DEBUG] Received app_mention event", flush=True)
 
+    channel = event.get("channel", "")
     thread_ts = event.get("thread_ts", event["ts"])
     text = event.get("text", "")
+    is_thread_reply = "thread_ts" in event  # True if this is a reply in a thread
 
     # Remove the bot mention from the text
     query_text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
-    print(f"[DEBUG] Query: {query_text}", flush=True)
+    print(f"[DEBUG] Query: {query_text}, is_thread_reply: {is_thread_reply}, channel: {channel}, thread_ts: {thread_ts}", flush=True)
 
     if not query_text:
         await say(
@@ -358,6 +406,14 @@ async def handle_mention(event, say, client):
             thread_ts=thread_ts
         )
         return
+
+    # Track this thread for follow-up replies
+    active_threads.add(thread_ts)
+
+    # If this is a reply in a thread, include context for read_thread
+    if is_thread_reply:
+        query_text = f"[Context: channel={channel}, thread_ts={thread_ts}]\n\nUser reply: {query_text}"
+        print(f"[DEBUG] Final query with context: {query_text}", flush=True)
 
     # Acknowledge the request
     await say(text="🔍 *Analyzing...*", thread_ts=thread_ts)
@@ -367,23 +423,34 @@ async def handle_mention(event, say, client):
 
 
 @app.event("message")
-async def handle_message(event, say):
-    """Handle direct messages to the bot."""
-    # Only respond to DMs
-    if not event.get("channel", "").startswith("D"):
-        return
-
+async def handle_message(event, say, client):
+    """Handle direct messages and thread replies."""
     # Ignore bot messages
     if event.get("bot_id"):
         return
 
+    channel = event.get("channel", "")
+    thread_ts = event.get("thread_ts")
     text = event.get("text", "").strip()
-    if text:
-        await handle_mention(
-            {"channel": event["channel"], "ts": event["ts"], "text": text, "user": event.get("user")},
-            say,
-            None
-        )
+
+    # Handle DMs
+    if channel.startswith("D"):
+        if text:
+            await handle_mention(
+                {"channel": channel, "ts": event["ts"], "text": text, "user": event.get("user")},
+                say,
+                None
+            )
+        return
+
+    # Handle thread replies (not @mentions - those are handled by handle_mention)
+    if thread_ts and text and "<@" not in text:
+        # Continue conversation in active threads
+        if thread_ts in active_threads:
+            # Include channel and thread_ts so agent can use read_thread
+            context_query = f"[Context: channel={channel}, thread_ts={thread_ts}]\n\nUser reply: {text}"
+            await say(text="🔄 *Processing...*", thread_ts=thread_ts)
+            asyncio.create_task(process_query(context_query, thread_ts, say))
 
 
 async def main():
@@ -392,7 +459,7 @@ async def main():
     print("🚛 Retail Cash Operations Agent - Slack Bot")
     print("=" * 50)
     print("Bot is starting...")
-    print("Mention @Retail Cash in #cash-logistics-alerts")
+    print("Mention @Retail Cash in any channel")
     print("Press Ctrl+C to stop")
     print("=" * 50)
 
