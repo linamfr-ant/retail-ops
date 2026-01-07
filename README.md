@@ -1,16 +1,28 @@
-# Armored Carrier Logistics Agent
+# Retail Cash Logistics Agent
 
-A demo showcasing the **Claude Agent SDK** (`anthropic-agentsdk`) with SQLite MCP integration for analyzing armored carrier pickup logistics.
+A Slack bot powered by the **Claude Agent SDK** that analyzes armored carrier pickup logistics for retail cash management.
 
-## Overview
+## How It Works
 
-This agent analyzes retail cash management operations, including:
-- **Deposit pattern analysis** - Peak days, trends, volume patterns
-- **Schedule optimization** - Mismatches between deposits and pickups
-- **Cost analysis** - Per-pickup costs, overtime trends
-- **Risk assessment** - Cash sitting times, security exposure
-- **Route consolidation** - Efficiency opportunities
-- **Slack alerting** - Automatic alerts for missed deposits to `#cash-logistics-alerts`
+```
+Slack @mention → Slack Bot (Bolt) → Claude Agent SDK → Custom MCP Server → SQLite DB
+                                           ↓
+                                    Agent Response → Slack Channel
+```
+
+1. User @mentions the bot in Slack with a query
+2. `slack_bot.py` receives the message via Slack Bolt (Socket Mode)
+3. Query is sent to Claude via the **Claude Agent SDK**
+4. Claude uses MCP tools to query the SQLite database (`mcp_server_db.py`)
+5. Response streams back to the Slack thread
+
+## What It Analyzes
+
+- **Missed Pickups (SLA Credits)** - Scheduled pickups that didn't occur
+- **Deposit Patterns** - Peak days, trends, volume patterns
+- **Cost Optimization** - Overtime costs, inefficient routes
+- **Risk Assessment** - Cash sitting times, security exposure
+- **Route Consolidation** - Nearby stores that could share pickup days
 
 ## Quick Start
 
@@ -21,11 +33,8 @@ This agent analyzes retail cash management operations, including:
 python -m venv venv
 source venv/bin/activate  # or `venv\Scripts\activate` on Windows
 
-# Install Claude Agent SDK and dependencies
+# Install dependencies
 pip install -r requirements.txt
-
-# The SQLite MCP server is invoked via uvx (auto-installs on first run)
-# Or pre-install: pip install mcp-server-sqlite
 ```
 
 ### 2. Set Up Environment
@@ -134,7 +143,7 @@ The seed data creates **5 missed pickup scenarios** in the last 7 days:
 ```
 retail-ops/
 ├── config/
-│   └── mcp_config.json      # MCP server configuration
+│   └── mcp_config.json      # MCP server configuration (reference)
 ├── data/
 │   └── logistics.db         # SQLite database (generated)
 ├── database/
@@ -144,8 +153,8 @@ retail-ops/
 ├── scripts/
 │   └── init_db.py           # Database initialization
 ├── src/
-│   ├── agent.py             # Agent definition (Agent SDK + MCP)
-│   └── slack_bot.py         # Slack bot listener
+│   ├── mcp_server_db.py     # Custom SQLite MCP server (JSON-RPC over stdio)
+│   └── slack_bot.py         # Slack bot + Claude Agent SDK integration
 ├── requirements.txt
 └── README.md
 ```
@@ -153,58 +162,69 @@ retail-ops/
 ## Architecture
 
 ```
-┌─────────────────┐                              ┌─────────────────┐
-│  Slack Channel  │                         ┌───▶│   SQLite MCP    │
-│ #cash-logistics │                         │    │    Server       │
-│    -alerts      │                         │    └────────┬────────┘
-└────────┬────────┘     ┌─────────────────┐ │             │
-         │              │  Claude Agent   │─┤             ▼
-         │   @mention   │  (Agent SDK)    │ │    ┌─────────────────┐
-         └─────────────▶│                 │ │    │  logistics.db   │
-                        └────────┬────────┘ │    └─────────────────┘
-                                 │          │
-                                 │          │    ┌─────────────────┐
-                                 │          └───▶│   Slack MCP     │
-                                 │               │    Server       │
-                                 │               └────────┬────────┘
-                                 │                        │
-                                 └────────────────────────┘
-                                      Response + Alerts
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│   Slack User     │     │   slack_bot.py   │     │  Claude Agent    │
+│   @mentions bot  │────▶│   (Bolt SDK)     │────▶│  SDK query()     │
+└──────────────────┘     └──────────────────┘     └────────┬─────────┘
+                                  ▲                        │
+                                  │                        ▼
+                                  │               ┌──────────────────┐
+                         Response streamed        │ mcp_server_db.py │
+                         back to thread           │ (SQLite MCP)     │
+                                  │               └────────┬─────────┘
+                                  │                        │
+                                  │                        ▼
+                                  │               ┌──────────────────┐
+                                  └───────────────│  logistics.db    │
+                                                  └──────────────────┘
 ```
 
-### Claude Agent SDK Components
+## Key Components
+
+### 1. Slack Bot (`src/slack_bot.py`)
+
+Uses **Slack Bolt** (Socket Mode) to listen for @mentions and DMs. When a message arrives:
 
 ```python
-from agents import Agent, Runner
-from agents.mcp import MCPServerStdio
+from claude_agent_sdk import query, ClaudeAgentOptions
 
-# SQLite MCP for database queries
-sqlite_mcp = MCPServerStdio(
-    name="sqlite",
-    command="uvx",
-    args=["mcp-server-sqlite", "--db-path", "data/logistics.db"],
+options = ClaudeAgentOptions(
+    system_prompt=SYSTEM_PROMPT,
+    mcp_servers={
+        "sqlite": {
+            "command": sys.executable,
+            "args": ["src/mcp_server_db.py"],
+        },
+    },
+    allowed_tools=["mcp__sqlite__list_tables", "mcp__sqlite__read_query", ...],
+    max_turns=30,
 )
 
-# Slack MCP for alerting
-slack_mcp = MCPServerStdio(
-    name="slack",
-    command="npx",
-    args=["-y", "@modelcontextprotocol/server-slack"],
-    env={"SLACK_BOT_TOKEN": os.getenv("SLACK_BOT_TOKEN")},
-)
-
-# Create agent with both MCP servers
-agent = Agent(
-    name="Logistics Analyst",
-    model="claude-sonnet-4-20250514",
-    instructions=SYSTEM_PROMPT,
-    mcp_servers=[sqlite_mcp, slack_mcp],
-)
-
-# Run queries (analysis + alerting)
-result = await Runner.run(agent, "Alert on missed deposits")
+async for message in query(prompt=user_query, options=options):
+    # Stream responses back to Slack thread
+    await say(text=message.text, thread_ts=thread_ts)
 ```
 
-The agent uses MCP (Model Context Protocol) to:
-1. Query the SQLite database for logistics analysis
-2. Send alerts to Slack when issues are detected
+### 2. Custom MCP Server (`src/mcp_server_db.py`)
+
+A lightweight JSON-RPC server that provides SQLite access via MCP protocol:
+
+- `list_tables` - List all database tables
+- `describe_table` - Get schema for a table
+- `read_query` - Execute SELECT queries
+- `write_query` - Execute INSERT/UPDATE/DELETE
+
+The agent constructs SQL queries based on:
+- Database schema (provided in system prompt)
+- Business definitions (missed pickups, SLA credits, etc.)
+- User's natural language question
+
+### 3. Business Logic
+
+**Missed Pickup (for SLA credits):**
+A pickup was SCHEDULED (exists in `pickup_schedules`) but did NOT occur (no matching `pickup_costs` record).
+
+**Cost Optimization:**
+- High `overtime_cost` relative to `base_cost`
+- Low `cash_collected` relative to `total_cost`
+- Stores in same region with different pickup days
