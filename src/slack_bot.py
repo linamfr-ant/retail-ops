@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Retail Cash Logistics Agent - Slack Integration with Claude Agent SDK
+Retail Cash Operations Agent - Slack Integration with Claude Agent SDK
 
 This bot analyzes armored carrier services, deposit patterns, and alerts on missed deposits.
 It uses the Claude Agent SDK with MCP tools for SQLite and Slack.
@@ -389,7 +389,7 @@ async def handle_message(event, say):
 async def main():
     """Start the Slack bot."""
     print("=" * 50)
-    print("🚛 Retail Cash Logistics Agent - Slack Bot")
+    print("🚛 Retail Cash Operations Agent - Slack Bot")
     print("=" * 50)
     print("Bot is starting...")
     print("Mention @Retail Cash in #cash-logistics-alerts")

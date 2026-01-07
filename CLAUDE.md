@@ -1,4 +1,4 @@
-# Retail Cash Logistics Agent
+# Retail Cash Operations Agent
 
 Slack bot using Claude Agent SDK to analyze armored carrier pickups for retail cash management.
 

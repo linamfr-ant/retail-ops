@@ -1,4 +1,4 @@
-# Retail Cash Logistics Agent
+# Retail Cash Operations Agent
 
 A Slack bot powered by the **Claude Agent SDK** that analyzes armored carrier pickup logistics for retail cash management.
 
