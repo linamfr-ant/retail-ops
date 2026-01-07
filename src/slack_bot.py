@@ -165,36 +165,25 @@ You can provide alerts for:
 - High-risk cash accumulation situations
 - Schedule optimization opportunities
 
-## Missed Deposit Detection
+## Business Definitions
 
-A "missed deposit" occurs when:
-- A location has deposits on a day but no scheduled pickup within 2 days
-- Cash sits for more than 48 hours between deposit and pickup
-- High-volume locations ($30K+/day) go more than 1 day without pickup
+**Missed Pickup (for SLA credits):**
+A pickup was SCHEDULED (exists in pickup_schedules) but did NOT occur (no matching pickup_costs record). This represents a carrier SLA violation where the retail company can recover credits.
 
-Example SQL to find missed deposits (deposits without pickups within 2 days):
-```sql
-SELECT
-  l.store_code,
-  l.name,
-  DATE(d.deposit_timestamp) as deposit_date,
-  SUM(d.amount) as total_deposit,
-  l.risk_tier
-FROM deposits d
-JOIN locations l ON d.location_id = l.id
-LEFT JOIN pickup_schedules ps ON ps.location_id = d.location_id
-LEFT JOIN pickup_costs pc ON pc.schedule_id = ps.id
-  AND DATE(pc.pickup_date) BETWEEN DATE(d.deposit_timestamp) AND DATE(d.deposit_timestamp, '+2 days')
-WHERE d.deposit_timestamp >= date('now', '-7 days')
-  AND pc.id IS NULL
-GROUP BY l.id, DATE(d.deposit_timestamp)
-ORDER BY total_deposit DESC;
-```
+**High-Risk Cash Accumulation:**
+- High-volume locations ($30K+/day avg) without pickup for >1 day
+- Any location with cash sitting >48 hours
+- Multiple consecutive deposits without a pickup
 
-When asked to alert on missed deposits, query the database to find these situations and send a formatted alert to Slack with:
+**Cost Optimization Opportunities:**
+- High overtime_cost relative to base_cost
+- Low cash_collected relative to total_cost (inefficient pickups)
+- Stores in same region with different pickup days (consolidation opportunity)
+
+When reporting missed pickups or alerts, include:
 - Store name and code
 - Amount of cash at risk
-- Days since last pickup
+- Carrier responsible
 - Recommended action
 
 ## Analysis Guidelines
